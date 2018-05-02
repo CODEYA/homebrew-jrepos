@@ -1,0 +1,306 @@
+#!/bin/bash
+
+# Copyright 2018 CODEYA, Inc.
+# This code is licensed under MIT license (see LICENSE.txt for details)
+
+jrepos_version="0.0.1"
+
+function help() {
+  cat >&2 << EOF
+jrepos ${jrepos_version}
+
+Usage:
+    jrepos help                          Show this message
+    jrepos version                       Show version information
+    jrepos search [options] <formula...> search <formula>
+
+Options:
+    --format|-f <format>
+        %G  : group name
+        %A  : artifact name
+        %V  : version
+        %U  : updated date
+
+Formula:
+    g:<group name>
+    a:<artifact name>
+    l:<library name>
+
+Example:
+    $ jrepos search g:"org.apache.commons"
+    $ jrepos search -f "%V" g:"org.apache.commons" a:"commons-lang3"
+    $ jrepos search -f "%G %A %V" l:"commons-lang"
+    $ jrepos search -f "%G %A %V %U" l:"commons-lang3"
+EOF
+}
+
+# 二つの数字の大きい方を返す。
+function max() {
+  if [[ ${1} -gt ${2} ]]; then echo "${1}"
+  else echo "${2}"
+  fi
+}
+
+# サポートされているライブラリーについて、group と artifact を返す。
+function resolvelib() {
+  case "${1}" in
+    commons-io)
+      echo "org.apache.commons:commons-io"
+      ;;
+    commons-bcel|bcel)
+      echo "org.apache.bcel:bcel"
+      ;;
+    commons-cli)
+      echo "commons-cli:commons-cli"
+      ;;
+    commons-codec)
+      echo "commons-codec:commons-codec"
+      ;;
+    commons-collections|commons-collections4)
+      echo "org.apache.commons:commons-collections4"
+      ;;
+    commons-compress)
+      echo "org.apache.commons:commons-compress"
+      ;;
+    commons-configuration|commons-configuration2)
+      echo "org.apache.commons:commons-configuration2"
+      ;;
+    commons-crypto)
+      ehco "org.apache.commons:commons-crypto"
+      ;;
+    commons-csv)
+      echo "org.apache.commons:commons-csv"
+      ;;
+    commons-dbcp|commons-dbcp2)
+      echo "org.apache.commons:commons-dbcp2"
+      ;;
+    commons-dbutils)
+      echo "commons-dbutils:commons-dbutils"
+      ;;
+    commons-digester|commons-digester3)
+      echo "org.apache.commons:commons-digester3"
+      ;;
+    commons-email)
+      echo "org.apache.commons:commons-email"
+      ;;
+    commons-exec)
+      echo "org.apache.commons:commons-exec"
+      ;;
+    commons-fileupload)
+      echo "commons-fileupload:commons-fileupload"
+      ;;
+    commons-io)
+      echo "commons-io:commons-io"
+      ;;
+    commons-jci)
+      echo "org.apache.commons:commons-jci"
+      ;;
+    commons-jcs)
+      echo "org.apache.commons:commons-jcs"
+      ;;
+    commons-jelly)
+      echo "commons-jelly:commons-jelly"
+      ;;
+    commons-jexl|commons-jexl3)
+      echo "org.apache.commons:commons-jexl3"
+      ;;
+    commons-lang|commons-lang3)
+      echo "org.apache.commons:commons-lang3"
+      ;;
+    commons-logging)
+      echo "commons-logging:commons-logging"
+      ;;
+    commons-math|commons-math3)
+      echo "org.apache.commons:commons-math3"
+      ;;
+    commons-net)
+      echo "commons-net:commons-net"
+      ;;
+    commons-pool|commons-pool2)
+      echo "org.apache.commons:commons-pool2"
+      ;;
+    commons-proxy)
+      echo "org.apache.commons:commons-proxy"
+      ;;
+    commons-rdf)
+      echo "org.apache.commons:commons-rdf-parent"
+      ;;
+    commons-rng)
+      echo "org.apache.commons:commons-rng-parent"
+      ;;
+    commons-text)
+      echo "org.apache.commons:commons-text"
+      ;;
+    commons-validator)
+      echo "commons-validator:commons-validator"
+      ;;
+    commons-vfs|commons-vfs2)
+      echo "org.apache.commons:commons-vfs2"
+      ;;
+    commons-weaver)
+      echo "org.apache.commons:commons-weaver-parent"
+      ;;
+    slf4j|slf4j-api)
+      echo "org.slf4j:slf4j-api"
+      ;;
+    logback|logback-classic)
+      echo "ch.qos.logback:logback-classic"
+      ;;
+    junit)
+      echo "junit:junit"
+      ;;
+  esac
+}
+
+# Artifact を検索する
+function search() {
+  # format 引数
+  format="${1}"
+  if [[ -z "${format}" ]]; then format="%G %A %V %U"; fi
+
+  # formula 引数
+  while [[ $# -gt 0 ]]; do
+    type=`echo "${1}" | sed -e "s/:.*$//"`
+    value=`echo "${1}" | sed -E "s/^[^:]*(:([^:]*)){0,1}$/\2/"`
+
+    if [[ "${type}" = "g" ]]; then group="${value}";
+    elif [[ "${type}" = "a" ]]; then artifact="${value}";
+    elif [[ "${type}" = "l" ]]; then library="${value}";
+    fi
+
+    shift
+  done
+
+  # サポートしている library が指定された場合、group と artifact を置き換え
+  if [[ -n "${library}" ]]; then
+    ga=`resolvelib "${library}"`
+    if [[ -n "${ga}" ]]; then
+      group=`echo "${ga}" | sed -e "s/:.*$//"`
+      artifact=`echo "${ga}" | sed -E "s/^[^:]*(:([^:]*)){0,1}$/\2/"`
+    fi
+  fi
+
+  # Maven Central 用のクエリーを作成
+  query=""
+  if [[ -n "${group}" ]]; then
+    query="g:\"${group}\""
+  fi
+  if [[ -n "${artifact}" ]]; then
+    if [[ -n "${query}" ]]; then
+      query="${query}+AND+"
+    fi
+    query="${query}a:\"${artifact}\""
+  fi
+  if [[ -z "${query}" ]]; then
+    echo "No artifact found : group=${group}, artifact=${artifact}, library=${library}" >&2
+    exit 0;
+  fi
+
+  # curl にて Macen Central の API を呼び出し、結果を取得
+  curlcmd=`cat <<EOF
+curl
+-s
+-G
+--header 'Accept: application/json'
+https://search.maven.org/solrsearch/select
+-d q=${query}
+-d core=gav
+-d rows=1000
+-d wt=json
+EOF`
+  json=`eval ${curlcmd}`
+
+  # 結果が 0 件だった場合、標準エラー出力にメッセージを出力して終了
+  count=`echo "${json}" | jq -r ".response.numFound"`
+  if [[ $count -le 0 ]]; then
+    echo "No artifact found : group=${group}, artifact=${artifact}" >&2
+    exit 0;
+  fi
+
+  # 結果の JSON を解析
+  #   ソートは group ASC -> artifact ASC -> timestamp DESC にて行う。
+  items=`echo "${json}" | jq -r ".response.docs[] | [.g, .a, .v, .timestamp] | @tsv" | sort -k 1,1 -k 2,2 -k 4r,4`
+
+  # 各フィールドの最大長を調べる
+  maxg=0
+  maxa=0
+  maxv=0
+  maxu=0
+  while read line; do
+    # 行をフィールドに分割
+    group=`echo "${line}" | awk '{print $1}'`
+    artifact=`echo "${line}" | awk '{print $2}'`
+    version=`echo "${line}" | awk '{print $3}'`
+    timestamp=`echo "${line}" | awk '{print $4}'`
+    date=`date -r $((timestamp / 1000)) +"%Y/%m/%d"`
+
+    # フィールドの文字列町を取得
+    leng=`echo -n "${group}" | wc -c`
+    lena=`echo -n "${artifact}" | wc -c`
+    lenv=`echo -n "${version}" | wc -c`
+    lenu=`echo -n "${date}" | wc -c`
+
+    # フィールドごとの最大文字列町を調べる
+    maxg=`max ${maxg} ${leng}`
+    maxa=`max ${maxa} ${lena}`
+    maxv=`max ${maxv} ${lenv}`
+    maxu=`max ${maxu} ${lenu}`
+  done <<EOF
+$items
+EOF
+
+  # 結果を出力する
+  while read line; do
+    # 行をフィールドに分割
+    group=`echo "${line}" | awk '{print $1}'`
+    artifact=`echo "${line}" | awk '{print $2}'`
+    version=`echo "${line}" | awk '{print $3}'`
+    timestamp=`echo "${line}" | awk '{print $4}'`
+    updated=`date -r $((timestamp / 1000)) +"%Y/%m/%d"`
+
+    # 各フィールドの文字列長さをフィールドごとの最大長に揃える
+    fgroup=`printf "%-${maxg}s" "${group}"`
+    fartifact=`printf "%-${maxa}s" "${artifact}"`
+    fversion=`printf "%-${maxv}s" "${version}"`
+    fupdated=`printf "%-${maxu}s" "${updated}"`
+
+    # 指定された format に従い結果を出力
+    output=`echo "${format}" | sed -e "s/%G/${fgroup}/g" -e "s/%A/${fartifact}/g" -e "s/%V/${fversion}/g" -e "s:%U:${fupdated}:g"`
+    echo "${output}"
+  done <<EOF
+$items
+EOF
+}
+
+case "${1}" in
+  help)
+    help
+    exit 0
+    ;;
+  version)
+    echo "jrepos ${jrepos_version}" >&2
+    exit 0
+    ;;
+  search)
+    shift
+    format=""
+    while getopts "f:" opt; do
+      case $opt in
+        f)
+          format=$OPTARG
+          ;;
+        \?)
+          echo "invalid options :  $OPTARG"
+          ;;
+      esac
+    done
+    shift $((OPTIND-1))
+    if [[ $# -le 0 ]]; then help; exit 1; fi
+    search "${format}" "$@"
+    ;;
+  *)
+    help
+    exit 1
+    ;;
+esac
+exit 0
